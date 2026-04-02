@@ -1,0 +1,200 @@
+{
+  "$defs": {
+    "AttackCategory": {
+      "enum": [
+        "prompt_injection_rag",
+        "tool_misuse",
+        "cross_agent_injection",
+        "memory_poisoning"
+      ],
+      "title": "AttackCategory",
+      "type": "string"
+    },
+    "Finding": {
+      "properties": {
+        "finding_id": {
+          "title": "Finding Id",
+          "type": "string"
+        },
+        "prompt_id": {
+          "title": "Prompt Id",
+          "type": "string"
+        },
+        "category": {
+          "$ref": "#/$defs/AttackCategory"
+        },
+        "subcategory": {
+          "title": "Subcategory",
+          "type": "string"
+        },
+        "severity": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Severity",
+          "type": "integer"
+        },
+        "grade": {
+          "$ref": "#/$defs/Grade"
+        },
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "grading_method": {
+          "title": "Grading Method",
+          "type": "string"
+        },
+        "agent_response": {
+          "title": "Agent Response",
+          "type": "string"
+        },
+        "tool_calls_made": {
+          "items": {
+            "$ref": "#/$defs/ToolCallTrace"
+          },
+          "title": "Tool Calls Made",
+          "type": "array"
+        },
+        "intermediate_steps": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Intermediate Steps",
+          "type": "array"
+        },
+        "reasoning": {
+          "title": "Reasoning",
+          "type": "string"
+        },
+        "compliance_refs": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Compliance Refs",
+          "type": "array"
+        },
+        "latency_ms": {
+          "title": "Latency Ms",
+          "type": "number"
+        }
+      },
+      "required": [
+        "finding_id",
+        "prompt_id",
+        "category",
+        "subcategory",
+        "severity",
+        "grade",
+        "confidence",
+        "grading_method",
+        "agent_response",
+        "reasoning",
+        "latency_ms"
+      ],
+      "title": "Finding",
+      "type": "object"
+    },
+    "Grade": {
+      "enum": [
+        "pass",
+        "partial_fail",
+        "fail",
+        "critical_fail"
+      ],
+      "title": "Grade",
+      "type": "string"
+    },
+    "ToolCallTrace": {
+      "properties": {
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "return_value": {
+          "additionalProperties": true,
+          "title": "Return Value",
+          "type": "object"
+        },
+        "authorized": {
+          "title": "Authorized",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "tool_name",
+        "arguments",
+        "return_value",
+        "authorized"
+      ],
+      "title": "ToolCallTrace",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "scan_id": {
+      "title": "Scan Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    },
+    "engine_version": {
+      "title": "Engine Version",
+      "type": "string"
+    },
+    "target": {
+      "additionalProperties": true,
+      "title": "Target",
+      "type": "object"
+    },
+    "summary": {
+      "additionalProperties": true,
+      "title": "Summary",
+      "type": "object"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/Finding"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "comparison": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Comparison"
+    }
+  },
+  "required": [
+    "scan_id",
+    "engine_version",
+    "target",
+    "summary"
+  ],
+  "title": "ScanResult",
+  "type": "object"
+}

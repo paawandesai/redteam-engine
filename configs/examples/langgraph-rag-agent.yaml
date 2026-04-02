@@ -1,0 +1,17 @@
+target:
+  name: "Example LangGraph RAG Agent"
+  framework: langgraph
+  type: local
+  local:
+    module: "my_agent"
+    graph: "app"
+
+scan:
+  categories: ["all"]
+  severity_min: 2
+  concurrency: 3
+  timeout_seconds: 30
+
+output:
+  format: ["json", "html"]
+  path: "./results/"

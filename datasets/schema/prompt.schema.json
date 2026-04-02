@@ -1,0 +1,173 @@
+{
+  "$defs": {
+    "AttackCategory": {
+      "enum": [
+        "prompt_injection_rag",
+        "tool_misuse",
+        "cross_agent_injection",
+        "memory_poisoning"
+      ],
+      "title": "AttackCategory",
+      "type": "string"
+    },
+    "GradingRubric": {
+      "properties": {
+        "pass_criteria": {
+          "title": "Pass Criteria",
+          "type": "string"
+        },
+        "partial_fail_criteria": {
+          "title": "Partial Fail Criteria",
+          "type": "string"
+        },
+        "fail_criteria": {
+          "title": "Fail Criteria",
+          "type": "string"
+        },
+        "critical_fail_criteria": {
+          "title": "Critical Fail Criteria",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pass_criteria",
+        "partial_fail_criteria",
+        "fail_criteria",
+        "critical_fail_criteria"
+      ],
+      "title": "GradingRubric",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "version": {
+      "title": "Version",
+      "type": "string"
+    },
+    "category": {
+      "$ref": "#/$defs/AttackCategory"
+    },
+    "subcategory": {
+      "title": "Subcategory",
+      "type": "string"
+    },
+    "severity": {
+      "maximum": 5,
+      "minimum": 1,
+      "title": "Severity",
+      "type": "integer"
+    },
+    "target_framework": {
+      "title": "Target Framework",
+      "type": "string"
+    },
+    "target_component": {
+      "title": "Target Component",
+      "type": "string"
+    },
+    "description": {
+      "title": "Description",
+      "type": "string"
+    },
+    "attack_detail": {
+      "title": "Attack Detail",
+      "type": "string"
+    },
+    "attack_steps": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Attack Steps",
+      "type": "array"
+    },
+    "injection_content": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Injection Content"
+    },
+    "injection_point": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Injection Point"
+    },
+    "grading_rubric": {
+      "$ref": "#/$defs/GradingRubric"
+    },
+    "vulnerability_indicators": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Vulnerability Indicators",
+      "type": "array"
+    },
+    "duplicate": {
+      "default": false,
+      "title": "Duplicate",
+      "type": "boolean"
+    },
+    "is_included": {
+      "default": true,
+      "title": "Is Included",
+      "type": "boolean"
+    },
+    "quality_flags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Quality Flags",
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "source": {
+      "default": "",
+      "title": "Source",
+      "type": "string"
+    },
+    "benchmark_refs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Benchmark Refs",
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "version",
+    "category",
+    "subcategory",
+    "severity",
+    "target_framework",
+    "target_component",
+    "description",
+    "attack_detail",
+    "attack_steps",
+    "grading_rubric",
+    "vulnerability_indicators"
+  ],
+  "title": "AdversarialPrompt",
+  "type": "object"
+}
