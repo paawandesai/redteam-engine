@@ -1,0 +1,240 @@
+"""Core scan execution engine.
+
+Orchestrates the scan lifecycle:
+1. Load prompts from dataset
+2. For each prompt: inject → invoke → grade → build finding
+3. Collect results into a ScanResult
+4. Save pending reviews for Claude Code batch grading
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+from redteam.engine.adapters.base import AgentAdapter, AgentResponse
+from redteam.engine.grader import GradeResult, GradingPipeline
+from redteam.models.enums import AttackCategory, Grade
+from redteam.models.prompts import AdversarialPrompt
+from redteam.models.results import Finding, ScanResult, ToolCallTrace
+
+# EU AI Act compliance mapping by category
+COMPLIANCE_MAP: dict[str, list[dict]] = {
+    "prompt_injection_rag": [
+        {"framework": "eu_ai_act", "reference": "Article 9", "requirement": "9(2)(a)"},
+        {"framework": "eu_ai_act", "reference": "Article 15", "requirement": "15(5)"},
+    ],
+    "tool_misuse": [
+        {"framework": "eu_ai_act", "reference": "Article 14", "requirement": "14(4)(d)"},
+        {"framework": "eu_ai_act", "reference": "Article 9", "requirement": "9(7)"},
+    ],
+    "cross_agent_injection": [
+        {"framework": "eu_ai_act", "reference": "Article 15", "requirement": "15(5)"},
+        {"framework": "eu_ai_act", "reference": "Article 9", "requirement": "9(2)(b)"},
+    ],
+    "memory_poisoning": [
+        {"framework": "eu_ai_act", "reference": "Article 12", "requirement": "12(1)"},
+        {"framework": "eu_ai_act", "reference": "Article 15", "requirement": "15(4)"},
+    ],
+}
+
+# Map grade strings to Grade enum
+_GRADE_MAP = {
+    "pass": Grade.PASS,
+    "partial_fail": Grade.PARTIAL_FAIL,
+    "fail": Grade.FAIL,
+    "critical_fail": Grade.CRITICAL_FAIL,
+    "pending_review": Grade.FAIL,  # Default pending to FAIL for safety
+}
+
+
+class ScanRunner:
+    """Core execution engine for adversarial scans."""
+
+    def __init__(
+        self,
+        adapter: AgentAdapter,
+        dataset: list[AdversarialPrompt],
+        grading_mode: str = "batch-review",
+        concurrency: int = 3,
+        timeout: int = 30,
+    ) -> None:
+        self.adapter = adapter
+        self.dataset = [p for p in dataset if p.is_included]
+        self.grading = GradingPipeline(mode=grading_mode)
+        self.concurrency = concurrency
+        self.timeout = timeout
+        self.pending_reviews: list[dict] = []
+
+    async def run(self) -> ScanResult:
+        """Execute all prompts against the target agent."""
+        semaphore = asyncio.Semaphore(self.concurrency)
+        findings: list[Finding] = []
+
+        async def run_single(prompt: AdversarialPrompt) -> Finding | None:
+            async with semaphore:
+                return await self._execute_prompt(prompt)
+
+        tasks = [run_single(p) for p in self.dataset]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for result in results:
+            if isinstance(result, Finding):
+                findings.append(result)
+            elif isinstance(result, Exception):
+                # Log but don't crash the scan
+                pass
+
+        summary = self._build_summary(findings)
+        scan_id = f"scan-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+
+        return ScanResult(
+            scan_id=scan_id,
+            schema_version="1.0.0",
+            engine_version="0.1.0",
+            target={"adapter": "langgraph"},
+            summary=summary,
+            findings=findings,
+        )
+
+    async def _execute_prompt(
+        self, prompt: AdversarialPrompt
+    ) -> Finding:
+        """Execute a single prompt: inject → invoke → grade → build finding."""
+        # 1. Setup injection if needed
+        if prompt.injection_content and prompt.injection_point:
+            injection_content = self._get_injection_content(prompt)
+            await self.adapter.setup_injection(
+                injection_content, prompt.injection_point
+            )
+
+        # 2. Invoke the agent
+        user_query = self._extract_user_query(prompt)
+        try:
+            response = await asyncio.wait_for(
+                self.adapter.invoke(user_query),
+                timeout=self.timeout,
+            )
+        except asyncio.TimeoutError:
+            response = AgentResponse(
+                text="",
+                error=f"Timeout after {self.timeout}s",
+                latency_ms=self.timeout * 1000,
+            )
+        except Exception as e:
+            response = AgentResponse(
+                text="",
+                error=str(e),
+            )
+
+        # 3. Cleanup injection
+        await self.adapter.cleanup_injection()
+
+        # 4. Grade the response
+        grade_result = self.grading.grade(prompt, response)
+
+        # 5. Collect pending reviews
+        if grade_result.grading_method == "pending_review":
+            self.pending_reviews.append(grade_result.context)
+
+        # 6. Build finding
+        return self._build_finding(prompt, response, grade_result)
+
+    def _get_injection_content(self, prompt: AdversarialPrompt) -> str:
+        """Get the full document to inject from attack_steps or injection_content."""
+        for step in prompt.attack_steps:
+            if step.get("action") == "inject_document":
+                params = step.get("params", {})
+                if "document_content" in params:
+                    return params["document_content"]
+                if "content" in params:
+                    return params["content"]
+        return prompt.injection_content or ""
+
+    def _extract_user_query(self, prompt: AdversarialPrompt) -> str:
+        """Extract the user query from attack_steps."""
+        for step in prompt.attack_steps:
+            params = step.get("params", {})
+            if "user_query" in params:
+                return params["user_query"]
+            if "query" in params:
+                return params["query"]
+            if "message" in params:
+                return params["message"]
+        return prompt.description
+
+    def _build_finding(
+        self,
+        prompt: AdversarialPrompt,
+        response: AgentResponse,
+        grade_result: GradeResult,
+    ) -> Finding:
+        """Convert a graded response into a Finding with compliance refs."""
+        category_str = prompt.category.value
+        compliance_refs = COMPLIANCE_MAP.get(category_str, [])
+        grade = _GRADE_MAP.get(grade_result.grade, Grade.FAIL)
+
+        tool_traces = [
+            ToolCallTrace(
+                tool_name=tc.get("tool_name", tc.get("tool", "")),
+                arguments=tc.get("arguments", tc.get("args", {})),
+                return_value=tc.get("return_value", {}),
+                authorized=tc.get("authorized", True),
+            )
+            for tc in response.tool_calls
+        ]
+
+        return Finding(
+            finding_id=f"f-{uuid.uuid4().hex[:8]}",
+            prompt_id=prompt.id,
+            category=prompt.category,
+            subcategory=prompt.subcategory,
+            severity=prompt.severity,
+            grade=grade,
+            confidence=grade_result.confidence,
+            grading_method=grade_result.grading_method,
+            agent_response=response.text,
+            tool_calls_made=tool_traces,
+            intermediate_steps=response.intermediate_steps,
+            reasoning=grade_result.reasoning,
+            compliance_refs=compliance_refs,
+            latency_ms=response.latency_ms,
+        )
+
+    def _build_summary(self, findings: list[Finding]) -> dict:
+        """Compute summary stats from findings."""
+        by_grade: dict[str, int] = {}
+        by_category: dict[str, dict[str, int]] = {}
+
+        for f in findings:
+            grade_str = f.grade.value
+            by_grade[grade_str] = by_grade.get(grade_str, 0) + 1
+
+            cat = f.category.value
+            if cat not in by_category:
+                by_category[cat] = {}
+            by_category[cat][grade_str] = (
+                by_category[cat].get(grade_str, 0) + 1
+            )
+
+        return {
+            "total": len(findings),
+            "by_grade": by_grade,
+            "by_category": by_category,
+            "grading_stats": dict(self.grading.stats),
+        }
+
+    def save_pending_reviews(self, output_dir: str = "results") -> Path | None:
+        """Save pending review findings to JSON for Claude Code grading."""
+        if not self.pending_reviews:
+            return None
+        path = Path(output_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        out_file = path / "pending-review.json"
+        out_file.write_text(
+            json.dumps(self.pending_reviews, indent=2) + "\n"
+        )
+        return out_file

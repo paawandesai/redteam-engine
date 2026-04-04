@@ -78,13 +78,113 @@ def generate(
 
 @app.command()
 def scan(
-    config: str = typer.Option("", help="Path to target config YAML"),
-    module: str = typer.Option("", help="Python module:graph for direct invocation"),
-    grading_mode: str = typer.Option("batch-review", help="Grading mode: batch-review | llm | rule-only"),
-    quick: bool = typer.Option(False, help="Quick scan with reduced prompt set"),
+    config: str = typer.Option(None, help="Path to target YAML config"),
+    module: str = typer.Option(None, help="Python module:graph for direct scanning"),
+    quick: bool = typer.Option(False, help="Run quick scan (first 50 prompts by severity)"),
+    grading_mode: str = typer.Option("batch-review", help="batch-review | rule-only | llm"),
+    category: str = typer.Option(None, help="Filter to specific category"),
+    severity_min: int = typer.Option(1, help="Minimum severity to include"),
+    output: str = typer.Option("results/", help="Output directory"),
 ) -> None:
-    """Run adversarial scan against target."""
-    console.print("[yellow]Scan engine not implemented yet.[/yellow]")
+    """Run adversarial scan against a target agent."""
+    import asyncio
+    import importlib
+
+    from redteam.engine.adapters.langgraph_adapter import LangGraphAdapter
+    from redteam.engine.runner import ScanRunner
+    from redteam.models.enums import AttackCategory
+
+    if not module and not config:
+        console.print("[red]Specify --module or --config[/red]")
+        raise typer.Exit(1)
+
+    # --- Import the graph ---
+    if module:
+        parts = module.rsplit(":", 1)
+        if len(parts) != 2:
+            console.print("[red]--module format: package.module:graph_var[/red]")
+            raise typer.Exit(1)
+        mod_path, graph_var = parts
+        console.print(f"Importing [bold]{mod_path}:{graph_var}[/bold]...")
+        try:
+            mod = importlib.import_module(mod_path)
+        except ImportError as e:
+            console.print(f"[red]Cannot import module: {e}[/red]")
+            raise typer.Exit(1)
+        graph = getattr(mod, graph_var, None)
+        if graph is None:
+            console.print(f"[red]'{graph_var}' not found in {mod_path}[/red]")
+            raise typer.Exit(1)
+
+        # Look for inject/cleanup functions in the module
+        inject_fn = getattr(mod, "inject_document", None)
+        cleanup_fn = getattr(mod, "clear_injections", None)
+
+        adapter = LangGraphAdapter(
+            graph=graph,
+            inject_fn=inject_fn,
+            cleanup_fn=cleanup_fn,
+        )
+    else:
+        console.print("[yellow]YAML config loading not yet implemented. Use --module.[/yellow]")
+        raise typer.Exit(1)
+
+    # --- Load dataset ---
+    dataset_path = Path("datasets/prompts/")
+    if not dataset_path.exists():
+        console.print(f"[red]Dataset path not found: {dataset_path}[/red]")
+        raise typer.Exit(1)
+
+    prompts = _load_prompts_from_dir(dataset_path)
+    if not prompts:
+        console.print("[yellow]No prompts found in dataset.[/yellow]")
+        raise typer.Exit(1)
+
+    # Filter by category
+    if category:
+        try:
+            cat_enum = AttackCategory(category)
+            prompts = [p for p in prompts if p.category == cat_enum]
+        except ValueError:
+            console.print(f"[red]Unknown category: {category}[/red]")
+            raise typer.Exit(1)
+
+    # Filter by severity
+    prompts = [p for p in prompts if p.severity >= severity_min]
+
+    # Quick mode: top 50 by severity desc
+    if quick:
+        prompts = sorted(prompts, key=lambda p: -p.severity)[:50]
+
+    console.print(f"Loaded [bold]{len(prompts)}[/bold] prompts")
+    console.print(f"Grading mode: [bold]{grading_mode}[/bold]\n")
+
+    # --- Run scan ---
+    runner = ScanRunner(
+        adapter=adapter,
+        dataset=prompts,
+        grading_mode=grading_mode,
+        concurrency=3,
+        timeout=30,
+    )
+
+    scan_result = asyncio.run(runner.run())
+
+    # --- Save results ---
+    from redteam.reporting.json_reporter import save_scan_result
+    result_file = save_scan_result(scan_result, output)
+
+    # --- Save pending reviews ---
+    runner.save_pending_reviews(output)
+    pending_count = len(runner.pending_reviews)
+
+    # --- Print terminal report ---
+    from redteam.reporting.terminal_report import print_scan_report
+    print_scan_report(
+        scan_result,
+        pending_count=pending_count,
+        output_path=result_file,
+    )
 
 
 @app.command()
@@ -147,6 +247,57 @@ def push(
 ) -> None:
     """Push results to AuditLens."""
     console.print("[yellow]Push to AuditLens not implemented yet.[/yellow]")
+
+
+@app.command(name="grade-review")
+def grade_review(
+    input: str = typer.Option(..., help="Path to pending-review.json"),
+) -> None:
+    """Display pending review findings for Claude Code grading."""
+    from rich.panel import Panel
+
+    input_path = Path(input)
+    if not input_path.exists():
+        console.print(f"[red]File not found: {input_path}[/red]")
+        raise typer.Exit(1)
+
+    data = json.loads(input_path.read_text())
+    if not data:
+        console.print("[green]No pending reviews.[/green]")
+        raise typer.Exit()
+
+    console.print(f"\n[bold cyan]Pending Reviews ({len(data)} findings)[/bold cyan]\n")
+
+    for i, item in enumerate(data, 1):
+        rubric = item.get("grading_rubric", {})
+        tool_calls = item.get("tool_calls", [])
+        tool_str = ""
+        if tool_calls:
+            tool_lines = []
+            for tc in tool_calls:
+                name = tc.get("tool_name", tc.get("tool", "?"))
+                args = tc.get("arguments", tc.get("args", {}))
+                tool_lines.append(f"  {name}({json.dumps(args)})")
+            tool_str = "\n[bold]Tool calls:[/bold]\n" + "\n".join(tool_lines)
+
+        content = (
+            f"[bold]Prompt:[/bold] {item.get('prompt_id', '?')}\n"
+            f"[bold]Description:[/bold] {item.get('prompt_description', '?')}\n"
+            f"\n[bold]Agent response:[/bold]\n{item.get('agent_response', '(empty)')}\n"
+            f"{tool_str}\n"
+            f"\n[bold]Rule grader said:[/bold] {item.get('rule_reasoning', '?')}\n"
+            f"\n[bold]Grading rubric:[/bold]\n"
+            f"  PASS: {rubric.get('pass_criteria', '?')}\n"
+            f"  PARTIAL_FAIL: {rubric.get('partial_fail_criteria', '?')}\n"
+            f"  FAIL: {rubric.get('fail_criteria', '?')}\n"
+            f"  CRITICAL_FAIL: {rubric.get('critical_fail_criteria', '?')}"
+        )
+        console.print(Panel(content, title=f"Review {i}/{len(data)}", border_style="yellow"))
+
+    console.print(
+        "\n[dim]To grade these findings, copy the rubric + response into a "
+        "Claude Code session and assign PASS/PARTIAL_FAIL/FAIL/CRITICAL_FAIL.[/dim]\n"
+    )
 
 
 @app.command()
