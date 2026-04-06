@@ -68,7 +68,7 @@ class LangGraphAdapter:
 
         for msg in result.get("messages", []):
             if isinstance(msg, AIMessage):
-                # Capture text from the final AI message
+                # Capture text from AI messages
                 if msg.content and isinstance(msg.content, str):
                     response_text = msg.content
                 elif msg.content and isinstance(msg.content, list):
@@ -93,6 +93,23 @@ class LangGraphAdapter:
                 if hasattr(msg, "content")
                 else "",
             })
+
+        # Fallback: if no AIMessage had content, use the last message's
+        # content. Some graphs (e.g., Agentic RAG's generate node) return
+        # plain strings that LangGraph wraps as HumanMessage.
+        if not response_text:
+            messages = result.get("messages", [])
+            if messages:
+                last = messages[-1]
+                if hasattr(last, "content") and last.content:
+                    content = last.content
+                    if isinstance(content, str):
+                        response_text = content
+                    elif isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                response_text = block["text"]
+                                break
 
         # Enrich tool calls with return values from ToolMessages
         from langchain_core.messages import ToolMessage

@@ -1,12 +1,98 @@
 import json
 from pathlib import Path
 
+import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
 
 app = typer.Typer(name="redteam", help="Adversarial testing engine for AI agents")
 console = Console()
+
+
+def _load_scan_result(path: Path) -> "ScanResult":
+    """Load and validate a ScanResult from a JSON file."""
+    from redteam.models.results import ScanResult
+
+    data = json.loads(path.read_text())
+    return ScanResult.model_validate(data)
+
+
+def _find_latest_scan(results_dir: Path) -> Path | None:
+    """Find the most recently modified JSON file in results_dir."""
+    json_files = sorted(results_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
+    return json_files[-1] if json_files else None
+
+
+def _transform_for_auditlens(scan_result: "ScanResult") -> dict:
+    """Transform ScanResult into the AuditLens RedTeamScanResult schema."""
+    return {
+        "scan_id": scan_result.scan_id,
+        "timestamp": scan_result.timestamp.isoformat(),
+        "target": scan_result.target,
+        "summary": scan_result.summary,
+        "findings": [
+            {
+                "finding_id": f.finding_id,
+                "category": f.category,
+                "subcategory": f.subcategory,
+                "severity": f.severity,
+                "grade": f.grade,
+                "confidence": f.confidence,
+                "reasoning": f.reasoning,
+                "compliance_refs": f.compliance_refs,
+            }
+            for f in scan_result.findings
+        ],
+    }
+
+
+def _push_to_auditlens(
+    scan_result: "ScanResult", endpoint: str, output_dir: str
+) -> None:
+    """POST scan results to AuditLens and handle the response."""
+    payload = _transform_for_auditlens(scan_result)
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            resp = client.post(endpoint, json=payload)
+    except httpx.ConnectError:
+        console.print(
+            f"[red]Could not connect to AuditLens at {endpoint}. "
+            "Is the server running?[/red]"
+        )
+        raise typer.Exit(1)
+    except httpx.TimeoutException:
+        console.print(
+            "[red]Request timed out. The scan may have too many findings "
+            "for a single request.[/red]"
+        )
+        raise typer.Exit(1)
+
+    if resp.status_code >= 500:
+        console.print("[red]AuditLens server error. Try again later.[/red]")
+        raise typer.Exit(1)
+    if resp.status_code >= 400:
+        console.print(
+            f"[red]AuditLens error: {resp.status_code} — {resp.text[:200]}[/red]"
+        )
+        raise typer.Exit(1)
+
+    content_type = resp.headers.get("content-type", "")
+    if "application/pdf" in content_type:
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+        pdf_path = out_path / f"compliance-report-{scan_result.scan_id}.pdf"
+        pdf_path.write_bytes(resp.content)
+        console.print(
+            f"[green]Compliance report saved to [bold]{pdf_path}[/bold][/green]"
+        )
+    else:
+        try:
+            data = resp.json()
+            console.print("[bold cyan]AuditLens Response[/bold cyan]")
+            console.print_json(json.dumps(data, indent=2))
+        except Exception:
+            console.print(resp.text)
 
 
 def _load_prompts_from_dir(path: Path) -> list:
@@ -189,11 +275,39 @@ def scan(
 
 @app.command()
 def report(
-    input: str = typer.Option(..., help="Path to scan result JSON"),
-    format: str = typer.Option("html", help="Output format: json | html"),
+    input: str = typer.Argument(None, help="Scan result JSON path"),
+    compliance: bool = typer.Option(
+        False, "--compliance", help="Generate AI Act compliance PDF via AuditLens"
+    ),
+    endpoint: str = typer.Option(
+        "https://auditlens-9hox.onrender.com/api/v1/redteam/ingest/pdf",
+        help="AuditLens endpoint for compliance reports",
+    ),
 ) -> None:
     """Generate report from scan results."""
-    console.print("[yellow]Report generation not implemented yet.[/yellow]")
+    from redteam.reporting.terminal_report import print_scan_report
+
+    # Resolve input path
+    if input is None:
+        results_dir = Path("results/")
+        input_path = _find_latest_scan(results_dir)
+        if input_path is None:
+            console.print("[red]No scan results found in results/[/red]")
+            raise typer.Exit(1)
+        console.print(f"Using latest scan: [bold]{input_path}[/bold]")
+    else:
+        input_path = Path(input)
+
+    if not input_path.exists():
+        console.print(f"[red]File not found: {input_path}[/red]")
+        raise typer.Exit(1)
+
+    scan_result = _load_scan_result(input_path)
+
+    if compliance:
+        _push_to_auditlens(scan_result, endpoint, str(input_path.parent))
+    else:
+        print_scan_report(scan_result)
 
 
 @app.command()
@@ -239,14 +353,25 @@ def validate(
 
 @app.command()
 def push(
-    results: str = typer.Option(..., help="Path to scan result JSON"),
+    results: str = typer.Argument(help="Path to scan result JSON"),
     endpoint: str = typer.Option(
-        "http://localhost:8000/api/v1/redteam/ingest",
-        help="AuditLens ingest endpoint",
+        "https://auditlens-9hox.onrender.com/api/v1/redteam/ingest/pdf",
+        help="AuditLens API endpoint",
     ),
+    output: str = typer.Option("results/", help="Output directory"),
 ) -> None:
-    """Push results to AuditLens."""
-    console.print("[yellow]Push to AuditLens not implemented yet.[/yellow]")
+    """Push scan results to AuditLens for EU AI Act compliance PDF."""
+    results_path = Path(results)
+    if not results_path.exists():
+        console.print(f"[red]File not found: {results_path}[/red]")
+        raise typer.Exit(1)
+
+    scan_result = _load_scan_result(results_path)
+    console.print(
+        f"Pushing [bold]{scan_result.scan_id}[/bold] "
+        f"({len(scan_result.findings)} findings) to AuditLens..."
+    )
+    _push_to_auditlens(scan_result, endpoint, output)
 
 
 @app.command(name="grade-review")
