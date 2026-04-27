@@ -36,6 +36,8 @@ class LangGraphAdapter:
         self._inject_fn = inject_fn
         self._cleanup_fn = cleanup_fn
         self._tool_names = tool_names or []
+        # Multi-turn state. Reset by start_conversation().
+        self._conversation_history: list[Any] = []
 
     async def invoke(
         self, prompt: str, context: dict | None = None
@@ -169,3 +171,85 @@ class LangGraphAdapter:
     async def cleanup_injection(self) -> None:
         if self._cleanup_fn is not None:
             self._cleanup_fn()
+
+    # ------------------------------------------------------------------
+    # Multi-turn conversation API
+    # ------------------------------------------------------------------
+
+    async def start_conversation(self) -> None:
+        """Reset conversation history for a fresh multi-turn attack."""
+        self._conversation_history = []
+
+    async def continue_conversation(self, message: str) -> AgentResponse:
+        """Add a user message and run a turn, preserving prior history.
+
+        The agent sees the full conversation so far. All AI/Tool messages
+        produced by this turn are appended to the history so the next
+        call sees them as context.
+        """
+        from langchain_core.messages import ToolMessage
+
+        self._conversation_history.append(HumanMessage(content=message))
+
+        start = time.perf_counter()
+        try:
+            result = self.graph.invoke({"messages": list(self._conversation_history)})
+        except Exception as e:
+            elapsed = (time.perf_counter() - start) * 1000
+            return AgentResponse(text="", error=str(e), latency_ms=elapsed)
+        elapsed = (time.perf_counter() - start) * 1000
+
+        result_msgs = result.get("messages", [])
+        # Identify the new messages produced by this turn (everything
+        # past the prior history length).
+        new_msgs = result_msgs[len(self._conversation_history):]
+
+        # Capture text + tool calls from this turn only
+        text = ""
+        turn_tool_calls: list[dict] = []
+        intermediate: list[dict] = []
+
+        # Build tool-message map for return values
+        tool_msg_map: dict[str, str] = {}
+        for msg in new_msgs:
+            if isinstance(msg, ToolMessage):
+                tool_msg_map[msg.tool_call_id] = (
+                    str(msg.content)[:500] if msg.content else ""
+                )
+
+        for msg in new_msgs:
+            intermediate.append({
+                "type": type(msg).__name__,
+                "content_preview": (
+                    str(msg.content)[:200] if hasattr(msg, "content") else ""
+                ),
+            })
+            if isinstance(msg, AIMessage):
+                if msg.content and isinstance(msg.content, str):
+                    text = msg.content
+                elif msg.content and isinstance(msg.content, list):
+                    for block in msg.content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text = block["text"]
+                if msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        ret = tool_msg_map.get(tc["id"], "")
+                        authorized = not (
+                            "BLOCKED" in ret or "Access denied" in ret
+                        )
+                        turn_tool_calls.append({
+                            "tool_name": tc["name"],
+                            "arguments": tc["args"],
+                            "return_value": {"content": ret},
+                            "authorized": authorized,
+                        })
+
+        # Persist new messages so the next turn sees them
+        self._conversation_history = list(result_msgs)
+
+        return AgentResponse(
+            text=text,
+            tool_calls=turn_tool_calls,
+            intermediate_steps=intermediate,
+            latency_ms=elapsed,
+        )

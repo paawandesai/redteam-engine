@@ -103,7 +103,14 @@ class ScanRunner:
     async def _execute_prompt(
         self, prompt: AdversarialPrompt
     ) -> Finding:
-        """Execute a single prompt: inject → invoke → grade → build finding."""
+        """Execute a single prompt: inject → invoke → grade → build finding.
+
+        Handles two cases:
+          - Single-turn (1 send_prompt step): existing invoke() path.
+          - Multi-turn (2+ send_prompt steps): start_conversation +
+            continue_conversation per step, with tool calls / text
+            accumulated across turns and graded as a chain.
+        """
         # 1. Setup injection if needed
         if prompt.injection_content and prompt.injection_point:
             injection_content = self._get_injection_content(prompt)
@@ -111,13 +118,24 @@ class ScanRunner:
                 injection_content, prompt.injection_point
             )
 
-        # 2. Invoke the agent
-        user_query = self._extract_user_query(prompt)
+        # 2. Determine multi-turn vs single-turn
+        send_prompt_steps = self._send_prompt_steps(prompt)
+        is_multi_turn = len(send_prompt_steps) > 1 and hasattr(
+            self.adapter, "continue_conversation"
+        )
+
         try:
-            response = await asyncio.wait_for(
-                self.adapter.invoke(user_query),
-                timeout=self.timeout,
-            )
+            if is_multi_turn:
+                response = await asyncio.wait_for(
+                    self._execute_multi_turn(send_prompt_steps),
+                    timeout=self.timeout * len(send_prompt_steps),
+                )
+            else:
+                user_query = self._extract_user_query(prompt)
+                response = await asyncio.wait_for(
+                    self.adapter.invoke(user_query),
+                    timeout=self.timeout,
+                )
         except asyncio.TimeoutError:
             response = AgentResponse(
                 text="",
@@ -142,6 +160,61 @@ class ScanRunner:
 
         # 6. Build finding
         return self._build_finding(prompt, response, grade_result)
+
+    async def _execute_multi_turn(
+        self, send_prompt_steps: list[dict]
+    ) -> AgentResponse:
+        """Run a multi-turn attack as a connected conversation.
+
+        The agent sees each turn with full prior history. Tool calls
+        across all turns are aggregated so chain detection in the
+        grader can spot multi-step exploits.
+        """
+        await self.adapter.start_conversation()
+
+        all_tool_calls: list[dict] = []
+        all_intermediate: list[dict] = []
+        turns_breakdown: list[dict] = []
+        last_text = ""
+        total_latency = 0.0
+        last_error: str | None = None
+
+        for i, step in enumerate(send_prompt_steps, 1):
+            params = step.get("params", {})
+            message = (
+                params.get("user_query")
+                or params.get("query")
+                or params.get("message")
+                or ""
+            )
+            turn_response = await self.adapter.continue_conversation(message)
+            turns_breakdown.append({
+                "turn": i,
+                "user_message": message,
+                "agent_text": turn_response.text,
+                "tool_calls": list(turn_response.tool_calls),
+                "latency_ms": turn_response.latency_ms,
+                "error": turn_response.error,
+            })
+            all_tool_calls.extend(turn_response.tool_calls)
+            all_intermediate.extend(turn_response.intermediate_steps)
+            last_text = turn_response.text or last_text
+            total_latency += turn_response.latency_ms or 0.0
+            if turn_response.error:
+                last_error = turn_response.error
+
+        return AgentResponse(
+            text=last_text,
+            tool_calls=all_tool_calls,
+            intermediate_steps=all_intermediate,
+            latency_ms=total_latency,
+            error=last_error,
+            turns=turns_breakdown,
+        )
+
+    def _send_prompt_steps(self, prompt: AdversarialPrompt) -> list[dict]:
+        """Return all send_prompt steps from attack_steps in order."""
+        return [s for s in prompt.attack_steps if s.get("action") == "send_prompt"]
 
     def _get_injection_content(self, prompt: AdversarialPrompt) -> str:
         """Get the full document to inject from attack_steps or injection_content."""
@@ -202,6 +275,7 @@ class ScanRunner:
             reasoning=grade_result.reasoning,
             compliance_refs=compliance_refs,
             latency_ms=response.latency_ms,
+            turns=response.turns,
         )
 
     def _build_summary(self, findings: list[Finding]) -> dict:

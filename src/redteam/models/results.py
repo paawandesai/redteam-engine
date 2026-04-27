@@ -28,6 +28,8 @@ class Finding(BaseModel):
     reasoning: str
     compliance_refs: list[dict] = Field(default_factory=list)
     latency_ms: float
+    # Per-turn breakdown for multi-turn prompts. Empty for single-turn.
+    turns: list[dict] = Field(default_factory=list)
 
 
 class ScanResult(BaseModel):

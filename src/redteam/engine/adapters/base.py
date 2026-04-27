@@ -12,7 +12,15 @@ from pydantic import BaseModel
 
 
 class AgentResponse(BaseModel):
-    """Captured agent execution result."""
+    """Captured agent execution result.
+
+    For single-turn invocations, `turns` is empty and the top-level
+    fields describe the only response. For multi-turn invocations,
+    `turns` holds a per-turn breakdown and the top-level fields
+    aggregate across turns: `text` is the final turn's text, and
+    `tool_calls`/`intermediate_steps` accumulate every turn's calls
+    in chronological order.
+    """
 
     text: str
     tool_calls: list[dict] = []
@@ -20,6 +28,7 @@ class AgentResponse(BaseModel):
     raw_response: dict = {}
     latency_ms: float = 0.0
     error: str | None = None
+    turns: list[dict] = []  # per-turn breakdown for multi-turn scans
 
 
 class AgentCapabilities(BaseModel):
@@ -46,3 +55,10 @@ class AgentAdapter(Protocol):
     ) -> None: ...
 
     async def cleanup_injection(self) -> None: ...
+
+    # Multi-turn support. The runner only calls these when an
+    # AdversarialPrompt has more than one send_prompt step. Adapters
+    # may raise NotImplementedError if they don't support multi-turn.
+    async def start_conversation(self) -> None: ...
+
+    async def continue_conversation(self, message: str) -> AgentResponse: ...
