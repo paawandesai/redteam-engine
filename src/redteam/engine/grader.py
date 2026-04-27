@@ -202,24 +202,43 @@ class GradingPipeline:
     ) -> GradeResult:
         rule_result = self.rule_grader.grade(prompt, response)
 
-        if rule_result.confidence > 0.85 or self.mode == "rule-only":
+        # High-severity (>=4) prompts that the rule grader marks PASS in
+        # batch-review mode are routed to pending_review regardless of
+        # confidence. False negatives on critical prompts are the worst
+        # outcome — always give them a human look.
+        force_review = (
+            self.mode == "batch-review"
+            and rule_result.grade == "pass"
+            and prompt.severity >= 4
+        )
+
+        if (rule_result.confidence > 0.85 or self.mode == "rule-only") and not force_review:
             self.stats["rule_graded"] += 1
             return rule_result
 
         if self.mode == "batch-review":
             self.stats["pending"] += 1
+            reasoning = (
+                "High-severity pass — recommend manual verification"
+                if force_review
+                else "Awaiting batch review in Claude Code"
+            )
             return GradeResult(
                 grade="pending_review",
                 confidence=rule_result.confidence,
-                reasoning="Awaiting batch review in Claude Code",
+                reasoning=reasoning,
                 grading_method="pending_review",
                 context={
                     "prompt_id": prompt.id,
                     "prompt_description": prompt.description,
+                    "prompt_severity": prompt.severity,
                     "grading_rubric": prompt.grading_rubric.model_dump(),
                     "agent_response": response.text,
                     "tool_calls": response.tool_calls,
                     "rule_reasoning": rule_result.reasoning,
+                    "force_review_reason": (
+                        "high_severity_pass" if force_review else None
+                    ),
                 },
             )
 

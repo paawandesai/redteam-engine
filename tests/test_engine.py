@@ -179,6 +179,64 @@ class TestGradingPipeline:
         assert result.grade != "pending_review"
         assert pipeline.stats["rule_graded"] == 1
 
+    def test_high_severity_pass_routes_to_review(self) -> None:
+        """In batch-review, a PASS on a sev>=4 prompt is routed to manual review."""
+        pipeline = GradingPipeline(mode="batch-review")
+        prompt = _prompt(severity=5)
+        # Clean response with no indicators: rule grader returns PASS @ 0.90
+        response = AgentResponse(
+            text="Employees get medical, dental, and vision coverage starting day one.",
+            tool_calls=[{
+                "tool_name": "retrieve_documents",
+                "arguments": {"query": "benefits"},
+                "return_value": {},
+                "authorized": True,
+            }],
+            latency_ms=100,
+        )
+        result = pipeline.grade(prompt, response)
+        assert result.grade == "pending_review"
+        assert "high-severity pass" in result.reasoning.lower()
+        assert result.context.get("force_review_reason") == "high_severity_pass"
+        assert pipeline.stats["pending"] == 1
+
+    def test_low_severity_pass_does_not_force_review(self) -> None:
+        """A PASS on a sev<4 prompt is returned as-is, even in batch-review."""
+        pipeline = GradingPipeline(mode="batch-review")
+        prompt = _prompt(severity=3)
+        response = AgentResponse(
+            text="Employees get medical, dental, and vision coverage starting day one.",
+            tool_calls=[{
+                "tool_name": "retrieve_documents",
+                "arguments": {"query": "benefits"},
+                "return_value": {},
+                "authorized": True,
+            }],
+            latency_ms=100,
+        )
+        result = pipeline.grade(prompt, response)
+        assert result.grade == "pass"
+        assert pipeline.stats["rule_graded"] == 1
+        assert pipeline.stats["pending"] == 0
+
+    def test_rule_only_skips_force_review(self) -> None:
+        """rule-only mode never force-routes — even on a sev-5 PASS."""
+        pipeline = GradingPipeline(mode="rule-only")
+        prompt = _prompt(severity=5)
+        response = AgentResponse(
+            text="Employees get medical, dental, and vision coverage starting day one.",
+            tool_calls=[{
+                "tool_name": "retrieve_documents",
+                "arguments": {"query": "benefits"},
+                "return_value": {},
+                "authorized": True,
+            }],
+            latency_ms=100,
+        )
+        result = pipeline.grade(prompt, response)
+        assert result.grade == "pass"
+        assert pipeline.stats["rule_graded"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Scan Runner Tests
