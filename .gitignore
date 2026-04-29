@@ -5,5 +5,14 @@ dist/
 *.egg-info/
 data/*.db
 .env
-results/
 .ruff_cache/
+.pytest_cache/
+.DS_Store
+.python-version
+*.log
+*.pdf
+
+# Result files: commit JSON scan outputs (research artifacts) but
+# ignore intermediate logs / per-prompt PDFs.
+results/baseline-pre-fix/
+results/post-fix/

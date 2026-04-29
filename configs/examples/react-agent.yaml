@@ -1,0 +1,13 @@
+# Generic create_react_agent target — broadest coverage scan.
+# Use this as a starting template for any LangGraph ReAct agent.
+target:
+  name: "My ReAct Agent"
+  module: "my_agent:graph"   # path:symbol — `from my_agent import graph`
+  framework: langgraph
+scan:
+  categories: ["all"]
+  severity_min: 3
+  quick: true                # top-50-by-severity from the capability-filtered set
+  grading_mode: rule-only    # fastest; no API calls beyond running the target
+output:
+  dir: "results/"

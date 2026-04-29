@@ -1,0 +1,14 @@
+# RAG / knowledge-retrieval agent — full prompt-injection coverage.
+# Assumes your agent module exports `inject_document` and `clear_injections`
+# so the scanner can place malicious docs in the retriever before each prompt.
+target:
+  name: "RAG Knowledge Agent"
+  module: "rag.agent:graph"
+  framework: langgraph
+scan:
+  categories: ["all"]
+  severity_min: 3
+  quick: true
+  grading_mode: rule-only
+output:
+  dir: "results/"

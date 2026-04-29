@@ -1,0 +1,17 @@
+# Customer support / SaaS agent — focus on social engineering and identity.
+# Use when your agent has tools that can act on customer accounts
+# (query_database, update_account, send_email, etc.).
+target:
+  name: "Customer Support Agent"
+  module: "support.agent:graph"
+  framework: langgraph
+scan:
+  categories:
+    - "tool-misuse/conversational-escalation"
+    - "tool-misuse/identity-spoofing"
+    - "tool-misuse/scope-violation"
+  severity_min: 4
+  quick: false               # run all matching prompts, not just top-50
+  grading_mode: batch-review # surfaces ambiguous cases for manual review
+output:
+  dir: "results/"

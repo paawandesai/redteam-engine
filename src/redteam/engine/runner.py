@@ -51,6 +51,21 @@ _GRADE_MAP = {
 }
 
 
+_KNOWN_TOOL_NAMES = {
+    "file_read", "send_email", "update_account",
+    "query_database", "retrieve_documents", "web_search",
+    "search_documents", "search",
+}
+
+
+def _required_tools(prompt: AdversarialPrompt) -> set[str]:
+    """Extract tool names referenced in a prompt's indicators or attack_steps."""
+    text = " ".join(prompt.vulnerability_indicators).lower()
+    for step in prompt.attack_steps:
+        text += " " + str(step).lower()
+    return {t for t in _KNOWN_TOOL_NAMES if t in text}
+
+
 class ScanRunner:
     """Core execution engine for adversarial scans."""
 
@@ -61,6 +76,7 @@ class ScanRunner:
         grading_mode: str = "batch-review",
         concurrency: int = 3,
         timeout: int = 30,
+        filter_by_capabilities: bool = True,
     ) -> None:
         self.adapter = adapter
         self.dataset = [p for p in dataset if p.is_included]
@@ -68,9 +84,76 @@ class ScanRunner:
         self.concurrency = concurrency
         self.timeout = timeout
         self.pending_reviews: list[dict] = []
+        self.filter_by_capabilities = filter_by_capabilities
+        # Populated by run() after capability detection
+        self.capability_filter_summary: dict | None = None
+
+    async def _apply_capability_filter(
+        self, prompts: list[AdversarialPrompt]
+    ) -> tuple[list[AdversarialPrompt], dict]:
+        """Filter prompts based on detected agent capabilities.
+
+        Conservative rules:
+          - Skip prompt-injection-rag prompts when has_retrieval=False
+          - Skip prompts mentioning specific tools when none of those
+            tools appear in the agent's tool_list (only if tool_list
+            is non-empty — empty list means we don't know, so we keep
+            everything to be safe)
+
+        Returns (kept_prompts, summary).
+        """
+        try:
+            caps = await self.adapter.get_capabilities()
+        except Exception:
+            return prompts, {
+                "filter_applied": False,
+                "reason": "get_capabilities() failed; running all prompts",
+                "kept": len(prompts),
+                "skipped": 0,
+            }
+
+        kept: list[AdversarialPrompt] = []
+        skipped_no_retrieval = 0
+        skipped_no_tool: dict[str, int] = {}
+        agent_tools = set(caps.tool_list)
+        knows_tools = bool(agent_tools)
+
+        for p in prompts:
+            cat = p.category.value if hasattr(p.category, "value") else str(p.category)
+            if cat == "prompt_injection_rag" and not caps.has_retrieval:
+                skipped_no_retrieval += 1
+                continue
+            required = _required_tools(p)
+            # Drop tools that are universally available or RAG-specific
+            required.discard("retrieve_documents")
+            required.discard("search_documents")
+            required.discard("search")
+            if knows_tools and required and required.isdisjoint(agent_tools):
+                missing_key = "+".join(sorted(required))
+                skipped_no_tool[missing_key] = skipped_no_tool.get(missing_key, 0) + 1
+                continue
+            kept.append(p)
+
+        summary = {
+            "filter_applied": True,
+            "has_retrieval": caps.has_retrieval,
+            "tool_list": sorted(agent_tools),
+            "kept": len(kept),
+            "skipped_no_retrieval": skipped_no_retrieval,
+            "skipped_missing_tools": skipped_no_tool,
+            "total_input": len(prompts),
+        }
+        return kept, summary
 
     async def run(self) -> ScanResult:
         """Execute all prompts against the target agent."""
+        # Capability-based filtering before scan loop
+        prompts_to_run = self.dataset
+        if self.filter_by_capabilities:
+            prompts_to_run, self.capability_filter_summary = (
+                await self._apply_capability_filter(self.dataset)
+            )
+
         semaphore = asyncio.Semaphore(self.concurrency)
         findings: list[Finding] = []
 
@@ -78,7 +161,7 @@ class ScanRunner:
             async with semaphore:
                 return await self._execute_prompt(prompt)
 
-        tasks = [run_single(p) for p in self.dataset]
+        tasks = [run_single(p) for p in prompts_to_run]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for result in results:

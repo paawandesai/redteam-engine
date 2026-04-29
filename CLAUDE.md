@@ -6,6 +6,23 @@ An adversarial penetration testing engine for AI agents. It runs a curated datas
 
 This is one half of a two-repo product. This repo produces scan results. AuditLens (separate repo) consumes them for compliance reporting and GRC export.
 
+## Published Documentation (read first when joining)
+
+- **README.md** — entry point: key finding (60-90% multi-turn chain success), quick start, taxonomy table
+- **FINDINGS.md** — research narrative with full TM-CE-003 transcript and cross-model matrix
+- **ENTERPRISE_VALIDATION.md** — credibility audit; methodology cross-checked against Gravitee 2026, OWASP Agentic Top 10, peer-reviewed papers; vulnerable-vs-hardened comparison; honest verdict ("PARTIALLY VALID" with caveats)
+- **COMPLIANCE_VERIFICATION.md** — EU AI Act Article 9/12/14/15 mappings verified against regulation text
+- **docs/scanning-your-agent.md** — user-facing guide for scanning third-party LangGraph agents
+
+## Current Reality vs. Original Architecture
+
+Several files mentioned in the architecture diagram below are aspirational. Actual state as of 2026-04:
+- `html_reporter.py`, `compliance_mapper.py`, `openai_agents_adapter.py`, `api_adapter.py`, `sqlite_store.py` — **not yet implemented**. Compliance refs are inlined in `runner.py:25-42` (verified correct in COMPLIANCE_VERIFICATION.md).
+- `cross-agent-injection/` and `memory-poisoning/` dataset directories — **empty placeholders**. The 113-prompt corpus today covers 9 subcategories under prompt-injection-rag and tool-misuse only.
+- `monitor/` package — **deferred** ("Layer 3" in original spec).
+
+The shipping engine has: Pydantic v2 models, async runner with capability-based prompt filtering, two-tier grader with 5 multi-turn chain-detection patterns, severity-based force-review routing, LangGraph adapter (auto-detects tools), JSON + rich-terminal reporting, and a quality pipeline with TF-IDF dedup. **All 58 unit tests pass.**
+
 ## Architecture
 
 ```

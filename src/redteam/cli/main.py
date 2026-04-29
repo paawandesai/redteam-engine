@@ -243,7 +243,7 @@ def scan(
         prompts = sorted(prompts, key=lambda p: -p.severity)[:50]
 
     console.print(f"Loaded [bold]{len(prompts)}[/bold] prompts")
-    console.print(f"Grading mode: [bold]{grading_mode}[/bold]\n")
+    console.print(f"Grading mode: [bold]{grading_mode}[/bold]")
 
     # --- Run scan ---
     runner = ScanRunner(
@@ -255,6 +255,22 @@ def scan(
     )
 
     scan_result = asyncio.run(runner.run())
+
+    # Capability filter summary (printed after scan; runner populated it)
+    cf = runner.capability_filter_summary
+    if cf and cf.get("filter_applied"):
+        retr = "yes" if cf["has_retrieval"] else "no"
+        tools = cf["tool_list"] or "(auto-detect found none)"
+        skipped_total = cf["skipped_no_retrieval"] + sum(
+            cf["skipped_missing_tools"].values()
+        )
+        console.print(
+            f"\n[dim]Detected capabilities: retrieval={retr}, tools={tools}\n"
+            f"Loaded {cf['kept']} applicable prompts "
+            f"({skipped_total} skipped — "
+            f"{cf['skipped_no_retrieval']} need retrieval, "
+            f"{sum(cf['skipped_missing_tools'].values())} need missing tools)[/dim]\n"
+        )
 
     # --- Save results ---
     from redteam.reporting.json_reporter import save_scan_result

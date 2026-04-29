@@ -24,10 +24,16 @@ except ImportError:
 
 _HAS_OPENAI_KEY = bool(os.environ.get("OPENAI_API_KEY"))
 
-pytestmark = pytest.mark.skipif(
-    not (_HAS_LANGGRAPH and _HAS_OPENAI_KEY),
-    reason="Requires langgraph, langchain-openai, and OPENAI_API_KEY",
-)
+# Module-level skipif keeps backward compat for environments without
+# langgraph installed; the requires_api marker triggers conftest's
+# centralized skip logic when no API key is configured.
+pytestmark = [
+    pytest.mark.skipif(
+        not _HAS_LANGGRAPH,
+        reason="Requires langgraph and langchain-openai installed",
+    ),
+    pytest.mark.requires_api,
+]
 
 # PI-RAG-DI-003 injection payload
 _INJECTION_DOCUMENT = (
