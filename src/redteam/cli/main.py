@@ -296,7 +296,7 @@ def report(
         False, "--compliance", help="Generate AI Act compliance PDF via AuditLens"
     ),
     endpoint: str = typer.Option(
-        "https://auditlens-9hox.onrender.com/api/v1/redteam/ingest/pdf",
+        "https://auditlens-api-4ihm.onrender.com/api/v1/redteam/ingest/pdf",
         help="AuditLens endpoint for compliance reports",
     ),
 ) -> None:
@@ -371,7 +371,7 @@ def validate(
 def push(
     results: str = typer.Argument(help="Path to scan result JSON"),
     endpoint: str = typer.Option(
-        "https://auditlens-9hox.onrender.com/api/v1/redteam/ingest/pdf",
+        "https://auditlens-api-4ihm.onrender.com/api/v1/redteam/ingest/pdf",
         help="AuditLens API endpoint",
     ),
     output: str = typer.Option("results/", help="Output directory"),

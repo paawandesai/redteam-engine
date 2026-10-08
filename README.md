@@ -122,7 +122,7 @@ uv run redteam push results/cross-model-v2/gpt4o/scan-20260427-182339.json \
 uv run redteam report results/<scan>.json --compliance
 ```
 
-Without `--endpoint`, results go to the hosted AuditLens instance (`auditlens-9hox.onrender.com`).
+Without `--endpoint`, results go to the hosted AuditLens instance (`auditlens-api-4ihm.onrender.com`).
 
 ## Running tests
 
