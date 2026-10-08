@@ -1,6 +1,7 @@
 # Final Verification
 
 **Audit date:** 2026-04-29
+**Superseded in part (2026-10-08):** the "14/71 → 10/71" rows below are the grader's raw counts. Four of the hardened agent's 10 were `file_read` attempts the gate BLOCKED; real exploitation is 6/71. See the correction in FINDINGS.md ("What Does Fix It").
 **Auditor methodology:** every numerical claim cross-checked against the corresponding JSON artifact in `results/`; every external statistic re-verified via web search; every code reference checked against actual line numbers; every documented command actually executed.
 **Bias note:** several user-supplied verification questions referenced specific numerical claims (e.g. "37 correct, 43 sub-checks, 15 documented gaps") that **do not appear in any document in this repo**. Where the underlying claim isn't actually made, the check is reported as "claim not in doc" rather than confirmed or refuted.
 
