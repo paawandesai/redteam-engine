@@ -116,7 +116,7 @@ Everything marked *planned* is absent from the codebase.
 uv run redteam push results/cross-model-v2/gpt4o/scan-20260427-182339.json \
   --endpoint http://localhost:8000/api/v1/redteam/ingest/pdf
 # → compliance-report-<scan_id>.pdf
-#   Art. 14 FAIL (11 tool-misuse failures), Art. 9 FAIL (5 RAG-injection failures)
+#   Art. 14 FAIL (11/42 tool-misuse prompts failed or partially failed), Art. 9 FAIL (5/71 RAG-injection)
 
 # or push straight after a terminal report:
 uv run redteam report results/<scan>.json --compliance
