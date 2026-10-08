@@ -16,3 +16,6 @@ data/*.db
 # ignore intermediate logs / per-prompt PDFs.
 results/baseline-pre-fix/
 results/post-fix/
+
+# Generated launch-video workspace
+brag-output/
